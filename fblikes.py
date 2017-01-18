@@ -21,8 +21,7 @@ with open('creds.conf') as hlr:
 
 logger = logging.getLogger('fb')
 logger.setLevel(logging.DEBUG)
-time_append = time.strftime('%d%m%y%H%M', time.localtime())
-log_file = os.path.join(os.path.dirname(__file__), 'logs', time_append + "_fb.log")
+log_file = os.path.join(os.path.dirname(__file__), "likes.log")
 file_hlr = logging.FileHandler(log_file)
 logger.addHandler(file_hlr)
 console = logging.StreamHandler(stream=sys.stdout)
@@ -57,9 +56,15 @@ def main():
 
     scr_pages = _read_scrape_pages()
     msged_urls = _read_msged_urls()
+    unigue_ids = _read_user_unique_id()
     msg_content = _read_msg_content()
 
-    messages_count = int(cfg['send_messages'])
+    if cfg['send_messages'].lower() == 'false':
+        send_message = False
+    else:
+        send_message = True
+
+    max_count = int(cfg['max_out'])
     split_set_sleep = cfg['set_sleep'].split(',')
     min_sleep = int(split_set_sleep[0])
     max_sleep = int(split_set_sleep[1])
@@ -75,8 +80,9 @@ def main():
     driver.find_element_by_css_selector('#loginbutton').click()
 
     WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, 'pagelet_bluebar')))
-    logger.info('User logged in. Message to be sent out: {}'.format(messages_count))
+    logger.info('User logged in. Message to be sent out: {}'.format(max_count))
     logger.info('Sleep between messages set to between: {} and {}'.format(min_sleep, max_sleep))
+    logger.info('Send messages set to: {}.'.format(cfg['send_messages']))
 
     for line_ctr, pg_line in enumerate(scr_pages):
 
@@ -116,7 +122,7 @@ def main():
 
             # all liked posts on the page
             # collect hrefs
-            liked_posts = driver.find_elements_by_css_selector('._1xnd ._3emk')
+            liked_posts = driver.find_elements_by_css_selector('._2x4v')
             logger.debug('Liked posts: {}'.format(len(liked_posts)))
             for lbt in liked_posts:
                 likes_hrefs.append(lbt.get_attribute('href'))
@@ -127,9 +133,18 @@ def main():
                 driver.get(href)
                 logger.debug('People who reacted ({}): {}'.format(i , href))
 
+                for _ in range(100):
+                    see_more = _is_see_more()
+                    people = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located(
+                        (By.CSS_SELECTOR, '._5i_q a')))
+                    logger.info('People on this post collected: {}'.format(len(people)))
+                    if see_more:
+                        see_more.click()
+                        time.sleep(3)
+                    else:
+                        break
+
                 # if not _get_angry():
-                people = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located(
-                    (By.CSS_SELECTOR, '._5i_q a')))
                 for person in people:
                     people_hrfs.append(person.get_attribute('href'))
 
@@ -138,46 +153,66 @@ def main():
             people_hrfs = list(set(people_hrfs))
             logger.info('Distinct people harvested: {}'.format(len(people_hrfs)))
 
-            # Send messages
             msg_ctr = 0
-            page_ctr = 0
-            for url in people_hrfs:
-                url = _extract_profile(url)
-                if url not in msged_urls:
-                    driver.get(url)
-                    page_ctr += 1
+            id_ctr = 0
+            if send_message:
+                # Send messages
+                page_ctr = 0
+                for url in people_hrfs:
+                    url = _extract_profile(url)
+                    if url not in msged_urls:
+                        driver.get(url)
+                        page_ctr += 1
 
-                    # _clear_alert()
-                    _clear_any_chats()
-
-                    logger.debug('Open page url({}): {}'.format(page_ctr, url))
-
-                    if _send_message(msg_content):
-                        msg_ctr += 1
-                        logger.info('Message no ({}) sent to: {}'.format(msg_ctr, url))
-                        time.sleep(random.randint(min_sleep, max_sleep))
-                        _append_msged_url(url)
+                        # _clear_alert()
                         _clear_any_chats()
-                        if msg_ctr == messages_count:
-                            maxed_out = True
-                            break
-                    else:
-                        logger.debug('Did not send msg to: {}'.format(url))
-                        # check if user is blocked
-                        if _is_blocked():
-                            blocked = True
-                            break
-                        _append_msged_url(url)
-                else:
-                    logger.debug('Skip page url: {}. Message already sent'.format(url))
 
-            if maxed_out or blocked:
-                scr_pages[line_ctr][1] = 'IN PROGRESS'
+                        logger.debug('Open page url({}): {}'.format(page_ctr, url))
+
+                        if _send_message(msg_content):
+                            msg_ctr += 1
+                            logger.info('Message no ({}) sent to: {}'.format(msg_ctr, url))
+                            time.sleep(random.randint(min_sleep, max_sleep))
+                            _append_msged_url(url)
+                            _clear_any_chats()
+                            if msg_ctr == max_count:
+                                maxed_out = True
+                                break
+                        else:
+                            logger.debug('Did not send msg to: {}'.format(url))
+                            # check if user is blocked
+                            if _is_blocked():
+                                blocked = True
+                                break
+                            _append_msged_url(url)
+                    else:
+                        logger.debug('Skip page url: {}. Message already sent'.format(url))
+
+                if maxed_out or blocked:
+                    scr_pages[line_ctr][1] = 'IN PROGRESS'
+                else:
+                    scr_pages[line_ctr][1] = 'SCRAPED'
+
             else:
+                for url in people_hrfs:
+                    url = _extract_profile(url)
+                    if not url.count('profile.php?id') and not url.count('ufi/reaction') and not url.count('-'):
+                        url = url[url.find('com/') + 4:]
+                        if url not in unigue_ids:
+                            _append_user_unique_id(url)
+                            id_ctr += 1
+                            logger.debug('ID {} added ({}).'.format(url, id_ctr))
+                        else:
+                            logger.debug('ID already in file: {}.'.format(url))
+
                 scr_pages[line_ctr][1] = 'SCRAPED'
 
-            # add messages count
-            scr_pages[line_ctr][2] = str(msg_ctr + int(scr_pages[line_ctr][2]))
+            # add count
+            if scr_pages[line_ctr][2] == '':
+                existent_count = 0
+            else:
+                existent_count = int(scr_pages[line_ctr][2])
+            scr_pages[line_ctr][2] = str(msg_ctr + existent_count)
             _write_scrape_pages(scr_pages)
 
 
@@ -203,14 +238,14 @@ def _read_config():
 
 # http://stackoverflow.com/questions/6726953/open-the-file-in-universal-newline-mode-using-the-csv-django-module
 def _read_scrape_pages():
-    with open('scrapePages.csv', 'rU') as f:
+    with open('scrape_pages.csv', 'rU') as f:
         reader = csv.reader(f)
         return [row for row in reader]
 
 
 # http://stackoverflow.com/questions/3348460/csv-file-written-with-python-has-blank-lines-between-each-row
 def _write_scrape_pages(data):
-    with open('scrapePages.csv', 'wb') as f:
+    with open('scrape_pages.csv', 'wb') as f:
         writer = csv.writer(f)
         writer.writerows(data)
 
@@ -220,17 +255,27 @@ def _extract_profile(url):
 
 
 def _append_msged_url(url):
-    with open('msgProfiles.txt', 'a') as hlr:
+    with open('collect_profiles.txt', 'a') as hlr:
         hlr.write(url + '\n')
 
 
+def _append_user_unique_id(url):
+    with open('unique_id.txt', 'a') as hlr:
+        hlr.write(url + '\n')
+
+
+def _read_user_unique_id():
+    with open('unique_id.txt') as hlr:
+        return [l.strip() for l in hlr]
+
+
 def _read_msged_urls():
-    with open('msgProfiles.txt') as hlr:
+    with open('collect_profiles.txt') as hlr:
         return [l.strip() for l in hlr]
 
 
 def _read_msg_content():
-    with open('msgContent.txt') as hlr:
+    with open('message_content.txt') as hlr:
         return hlr.read()
 
 
@@ -271,6 +316,15 @@ def _is_blocked():
         el = WebDriverWait(driver, 1).until(lambda x: driver.find_element_by_css_selector('.fbNubFlyoutHeader ._4qba'))
         logger.debug(el.text)
         return True
+    except:
+        pass
+
+
+def _is_see_more():
+
+    try:
+        el = WebDriverWait(driver, 2).until(lambda x: driver.find_element_by_css_selector('.uiMorePagerPrimary'))
+        return el
     except:
         pass
 
